@@ -1,6 +1,7 @@
 import pyautogui
 import time
 import subprocess
+import traceback
 
 from config import *
 
@@ -91,4 +92,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        input("\nPresiona Enter para salir...")
