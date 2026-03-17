@@ -1,6 +1,6 @@
-SIESA_PATH = r"C:\Siesa\siesa.exe"
+SIESA_PATH = r"C:\Users\bri\Desktop\SIESA.85 - Eurobelleza.lnk"
 
-USUARIO = "master"
-PASSWORD = "pass"
+USUARIO = "MASTER"
+PASSWORD = "SI"
 
-TIEMPO_CARGA = 8
+TIEMPO_CARGA = 6
