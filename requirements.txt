@@ -1,0 +1,5 @@
+boto3
+pyautogui
+pygetwindow
+pillow
+pyinstaller
