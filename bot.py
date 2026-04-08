@@ -93,6 +93,7 @@ class RpaBot:
     def run(self) -> int:
         self._ensure_directories()
         self._log("Iniciando corrida batch")
+        siesa_opened = False
 
         try:
             with self._acquire_lock():
@@ -101,16 +102,20 @@ class RpaBot:
 
                 if not pending_orders:
                     self._log("No hay archivos nuevos por procesar")
+                    self._close_siesa_if_open()
                     self._finalize_and_upload_result()
                     return 0
 
                 self._open_siesa()
+                siesa_opened = True
                 self._login()
                 self._navigate_to_import_menu()
 
                 for order in pending_orders:
                     self._process_order(order)
 
+                if siesa_opened:
+                    self._close_siesa_if_open()
                 self._finalize_and_upload_result()
                 self._persist_state()
                 self._log("Corrida finalizada correctamente")
@@ -118,6 +123,8 @@ class RpaBot:
         except Exception as exc:  # noqa: BLE001
             self.run_summary["fatal_error"] = str(exc)
             self._log(f"Corrida fallida: {exc}")
+            if siesa_opened:
+                self._close_siesa_if_open()
             self._finalize_and_upload_result()
             self._persist_state()
             traceback.print_exc()
@@ -209,9 +216,16 @@ class RpaBot:
 
         pyautogui.write(file_name)
 
-        for key in IMPORT_SEQUENCE_SUFFIX:
-            pyautogui.press(key)
-            time.sleep(MENU_STEP_WAIT_SECONDS)
+        for index, key in enumerate(IMPORT_SEQUENCE_SUFFIX):
+            if len(key) > 1 and key.lower() not in {"enter", "tab", "f2", "f10"}:
+                pyautogui.write(key)
+            else:
+                pyautogui.press(key)
+
+            if key == "S" and index + 1 < len(IMPORT_SEQUENCE_SUFFIX) and IMPORT_SEQUENCE_SUFFIX[index + 1] == "enter":
+                time.sleep(LOGIN_WAIT_SECONDS)
+            else:
+                time.sleep(MENU_STEP_WAIT_SECONDS)
 
     def _handle_p99_files(self, order: PendingOrder, p99_files: list[Path]) -> ErrorResult:
         self._log(f"Se detectaron {len(p99_files)} archivo(s) P99 para {order.file_name}")
@@ -284,6 +298,20 @@ class RpaBot:
         window.activate()
         time.sleep(1)
 
+    def _close_siesa_if_open(self) -> None:
+        windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+        if not windows:
+            return
+
+        self._log("Cerrando ventana de Siesa")
+        window = windows[0]
+        if window.isMinimized:
+            window.restore()
+        window.activate()
+        time.sleep(1)
+        pyautogui.hotkey("alt", "f4")
+        time.sleep(2)
+
     def _list_p99_files(self) -> set[Path]:
         return {path for path in SIESA_P99_PATH.glob("*.P99")}
 
@@ -342,6 +370,7 @@ class RpaBot:
         fd = None
 
         try:
+            self._clear_stale_lock_if_needed()
             fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, str(os.getpid()).encode("utf-8"))
             yield
@@ -353,6 +382,36 @@ class RpaBot:
 
     def _iso_now(self) -> str:
         return datetime.now().astimezone().isoformat()
+
+    def _clear_stale_lock_if_needed(self) -> None:
+        if not LOCK_FILE.exists():
+            return
+
+        try:
+            pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            self._log("run.lock inválido, se eliminará para continuar")
+            LOCK_FILE.unlink(missing_ok=True)
+            return
+
+        if pid == os.getpid():
+            return
+
+        if self._is_process_running(pid):
+            raise RuntimeError(
+                f"Ya existe otra instancia del bot ejecutándose con PID {pid}. "
+                "No se iniciará una nueva corrida."
+            )
+
+        self._log(f"Se encontró un run.lock huérfano del PID {pid}, se eliminará")
+        LOCK_FILE.unlink(missing_ok=True)
+
+    def _is_process_running(self, pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
 
 
 def main() -> int:

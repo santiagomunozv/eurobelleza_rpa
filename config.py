@@ -1,14 +1,14 @@
 from pathlib import Path
 
 # Acceso a Siesa
-SIESA_SHORTCUT_PATH = Path(r"C:\Users\usuario\Desktop\SIESA.85 - Eurobelleza.lnk")
+SIESA_SHORTCUT_PATH = Path(r"D:\Escritorioo\SIESA.85 - GEB.lnk")
 SIESA_WORKING_DIR = Path(r"U:\uno85c")
 SIESA_PEDIDOS_PATH = Path(r"U:\uno85c\eurobelleza\trm")
 SIESA_P99_PATH = Path(r"U:\uno85c\eurobelleza\prt")
-SIESA_WINDOW_TITLE = "SIESA"
+SIESA_WINDOW_TITLE = "UNO8L"
 
-SIESA_USER = "USUARIO"
-SIESA_PASSWORD = "PASSWORD"
+SIESA_USER = "PAGINA"
+SIESA_PASSWORD = "1234"
 
 # Secuencias de teclado. Ajustar si el menú cambia.
 LOGIN_WAIT_SECONDS = 8
@@ -17,10 +17,10 @@ FILE_PROCESS_WAIT_SECONDS = 6
 
 MENU_SEQUENCE = ["c", "v", "d", "p", "v"]
 IMPORT_SEQUENCE_PREFIX = ["enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]
-IMPORT_SEQUENCE_SUFFIX = ["enter", "1", "1", "d", "enter", "0", "s", "enter", "f10"]
+IMPORT_SEQUENCE_SUFFIX = ["enter", "1", "1", "D", "99", "0", "S", "enter", "f10"]
 
 # Carpeta de trabajo local del bot
-BOT_WORKDIR = Path(r"C:\eurobelleza_rpa")
+BOT_WORKDIR = Path(r"D:\Escritorioo\eurobelleza_rpa")
 DOWNLOADS_DIR = BOT_WORKDIR / "downloads"
 ARCHIVE_DIR = BOT_WORKDIR / "archive"
 LOGS_DIR = BOT_WORKDIR / "logs"
