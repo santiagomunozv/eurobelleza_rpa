@@ -8,7 +8,7 @@ SIESA_P99_PATH = Path(r"U:\uno85c\eurobelleza\prt")
 SIESA_WINDOW_TITLE = "UNO8L"
 
 SIESA_USER = "PAGINA"
-SIESA_PASSWORD = "1234"
+SIESA_PASSWORD = "PAGINA"
 
 # Secuencias de teclado. Ajustar si el menú cambia.
 LOGIN_WAIT_SECONDS = 8
