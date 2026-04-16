@@ -1,4 +1,5 @@
 import json
+import re
 import os
 import shutil
 import socket
@@ -15,6 +16,7 @@ from typing import Any
 import boto3
 import pyautogui
 import pygetwindow as gw
+from PIL import Image, ImageChops, ImageOps, ImageStat
 
 from config import (
     ARCHIVE_DIR,
@@ -26,12 +28,21 @@ from config import (
     DOWNLOADS_DIR,
     FILE_PROCESS_WAIT_SECONDS,
     IMPORT_SEQUENCE_PREFIX,
+    IMPORT_SCREENSHOT_PATTERN,
     IMPORT_SEQUENCE_SUFFIX,
     LOCK_FILE,
+    LOGIN_SCREENSHOT_PATTERN,
     LOGIN_WAIT_SECONDS,
     LOGS_DIR,
     MENU_SEQUENCE,
     MENU_STEP_WAIT_SECONDS,
+    SCREENSHOTS_DIR,
+    SCREEN_CHECK_INTERVAL_SECONDS,
+    SCREEN_MATCH_CONFIDENCE,
+    SCREEN_CHECK_TIMEOUT_SECONDS,
+    SCREEN_VISUAL_SIMILARITY_THRESHOLD,
+    SIESA_FORCE_MAXIMIZE,
+    SIESA_RESET_WINDOW_LAYOUT,
     S3_ERRORES_PREFIX,
     S3_PEDIDOS_PREFIX,
     S3_RESULTADOS_PREFIX,
@@ -55,6 +66,7 @@ class PendingOrder:
     file_name: str
     s3_key: str
     local_download_path: Path
+    object_version: dict[str, Any]
 
 
 @dataclass
@@ -77,6 +89,8 @@ class RpaBot:
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_path = LOGS_DIR / f"run_{self.run_id}.log"
         self.state = self._load_state()
+        self.login_screenshot = self._resolve_screenshot(LOGIN_SCREENSHOT_PATTERN)
+        self.import_screenshot = self._resolve_screenshot(IMPORT_SCREENSHOT_PATTERN)
         self.run_summary: dict[str, Any] = {
             "run_id": self.run_id,
             "started_at": self._iso_now(),
@@ -135,20 +149,26 @@ class RpaBot:
         response = self.s3_client.list_objects_v2(Bucket=AWS_BUCKET, Prefix=S3_PEDIDOS_PREFIX)
 
         orders: list[PendingOrder] = []
-        processed_keys = set(self.state.get("processed_keys", {}).keys())
+        processed_objects = self.state.get("processed_keys", {})
 
         for item in response.get("Contents", []):
             key = item["Key"]
             if not key.upper().endswith(".PE0"):
                 continue
-            if key in processed_keys:
+            object_version = self._build_object_version(item)
+            if not self._should_process_object(key, object_version, processed_objects):
                 continue
 
             file_name = Path(key).name
             local_path = DOWNLOADS_DIR / file_name
             self._log(f"Descargando {key} -> {local_path}")
             self.s3_client.download_file(AWS_BUCKET, key, str(local_path))
-            orders.append(PendingOrder(file_name=file_name, s3_key=key, local_download_path=local_path))
+            orders.append(PendingOrder(
+                file_name=file_name,
+                s3_key=key,
+                local_download_path=local_path,
+                object_version=object_version,
+            ))
 
         return orders
 
@@ -159,12 +179,12 @@ class RpaBot:
         target_path = SIESA_PEDIDOS_PATH / order.file_name
         shutil.copy2(order.local_download_path, target_path)
 
-        before_p99 = self._list_p99_files()
+        before_p99 = self._snapshot_p99_files()
         self._import_file(order.file_name)
         time.sleep(FILE_PROCESS_WAIT_SECONDS)
-        after_p99 = self._list_p99_files()
+        after_p99 = self._snapshot_p99_files()
 
-        new_p99_files = sorted(after_p99 - before_p99)
+        new_p99_files = self._detect_changed_p99_files(before_p99, after_p99)
 
         if new_p99_files:
             error_result = self._handle_p99_files(order, new_p99_files)
@@ -177,7 +197,7 @@ class RpaBot:
         else:
             self.run_summary["files_without_error"].append(order.file_name)
 
-        self._mark_processed(order.s3_key, order.file_name)
+        self._mark_processed(order.s3_key, order.file_name, order.object_version)
         self._archive_local_file(order.local_download_path)
 
         if DELETE_SOURCE_OBJECTS:
@@ -187,13 +207,21 @@ class RpaBot:
             target_path.unlink()
 
     def _open_siesa(self) -> None:
+        existing_windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+        if existing_windows:
+            self._log("Reutilizando ventana existente de Siesa")
+            self._focus_window(existing_windows[0], reset_layout=True)
+            self._wait_for_screen(self.login_screenshot, "pantalla de login de Siesa")
+            return
+
         self._log("Abriendo Siesa")
         subprocess.Popen([str(SIESA_SHORTCUT_PATH)], cwd=str(SIESA_WORKING_DIR), shell=True)
-        time.sleep(LOGIN_WAIT_SECONDS)
+        self._wait_for_screen(self.login_screenshot, "pantalla de login de Siesa")
         self._activate_siesa_window()
 
     def _login(self) -> None:
         self._log("Iniciando sesión")
+        self._ensure_screen_visible(self.login_screenshot, "pantalla de login de Siesa")
         self._activate_siesa_window()
         pyautogui.write(SIESA_USER)
         pyautogui.press("tab")
@@ -207,8 +235,10 @@ class RpaBot:
         for key in MENU_SEQUENCE:
             pyautogui.press(key)
             time.sleep(MENU_STEP_WAIT_SECONDS)
+        self._wait_for_screen(self.import_screenshot, "pantalla de importación de pedidos")
 
     def _import_file(self, file_name: str) -> None:
+        self._ensure_screen_visible(self.import_screenshot, "pantalla de importación de pedidos")
         self._activate_siesa_window()
         for key in IMPORT_SEQUENCE_PREFIX:
             pyautogui.press(key)
@@ -260,18 +290,29 @@ class RpaBot:
         errors: list[str] = []
 
         for line in lines:
-            if line.startswith("*"):
+            cleaned_line = line.strip()
+            if not cleaned_line:
                 continue
 
-            stripped = line.strip()
-            if not stripped:
+            # Ignora encabezados, cajas del reporte y pie.
+            if (
+                "GENERACION DE PEDIDOS" in cleaned_line
+                or "PEDIDO" in cleaned_line and "CAMPO_INCONSISTENTE" in cleaned_line
+                or "FIN REPORTE" in cleaned_line
+                or cleaned_line[0] in {"U", "A", "+", "-", "=", "_", "³", "À", "Ä", "Ã", "Ú", "Ù", "¿", "´"}
+            ):
                 continue
 
-            if len(stripped) >= 10 and stripped[:10].isdigit():
-                stripped = stripped[10:].strip()
+            match = re.match(r"^\s*(\*?)(\d{8,10})\s+(\S+)\s+(.+?)\s*$", line)
+            if not match:
+                continue
 
-            if stripped:
-                errors.append(stripped)
+            warning_marker, _, field_code, message = match.groups()
+            if warning_marker == "*":
+                continue
+
+            clean_message = f"[{field_code}] {message.strip()}"
+            errors.append(clean_message)
 
         return errors
 
@@ -293,10 +334,187 @@ class RpaBot:
             raise RuntimeError(f"No se encontró una ventana de Siesa con el título '{SIESA_WINDOW_TITLE}'")
 
         window = windows[0]
-        if window.isMinimized:
+        self._focus_window(window)
+
+    def _wait_for_screen(self, screenshot_path: Path, screen_name: str) -> None:
+        deadline = time.time() + SCREEN_CHECK_TIMEOUT_SECONDS
+
+        while time.time() < deadline:
+            self._try_activate_siesa_window()
+            if self._is_screen_visible(screenshot_path):
+                return
+            time.sleep(SCREEN_CHECK_INTERVAL_SECONDS)
+
+        debug_path = self._save_debug_screenshot(screen_name)
+        raise RuntimeError(
+            f"No se pudo validar la {screen_name} dentro de {SCREEN_CHECK_TIMEOUT_SECONDS} segundos. "
+            f"Se guardó captura de depuración en {debug_path}."
+        )
+
+    def _ensure_screen_visible(self, screenshot_path: Path, screen_name: str) -> None:
+        self._activate_siesa_window()
+        if not self._is_screen_visible(screenshot_path):
+            raise RuntimeError(
+                f"Siesa no está en la {screen_name}. La corrida se detendrá para evitar marcar pedidos como exitosos."
+            )
+
+    def _try_activate_siesa_window(self) -> bool:
+        windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+        if not windows:
+            return False
+
+        window = windows[0]
+        self._focus_window(window)
+        return True
+
+    def _focus_window(self, window, reset_layout: bool = False) -> None:
+        try:
+            if window.isMinimized:
+                window.restore()
+        except Exception:
+            pass
+
+        try:
+            window.activate()
+            time.sleep(1)
+        except Exception:
+            pass
+
+        if reset_layout and SIESA_RESET_WINDOW_LAYOUT:
+            self._reset_window_layout(window)
+
+        if not SIESA_FORCE_MAXIMIZE:
+            return
+
+        try:
+            if not window.isMaximized:
+                window.maximize()
+                time.sleep(1)
+        except Exception:
+            pass
+
+        # Siesa 8.5 puede ignorar maximize() y responder mejor al menú del sistema.
+        try:
+            if not window.isMaximized:
+                pyautogui.hotkey("alt", "space")
+                time.sleep(0.5)
+                pyautogui.press("x")
+                time.sleep(1)
+        except Exception:
+            pass
+
+    def _reset_window_layout(self, window) -> None:
+        # Siesa 8.5 a veces queda visualmente corrupto hasta que la ventana cambia
+        # de estado y vuelve a maximizarse. Esta secuencia replica el workaround manual.
+        try:
+            if window.isMaximized:
+                window.restore()
+                time.sleep(1)
+                window.maximize()
+                time.sleep(1)
+                return
+        except Exception:
+            pass
+
+        try:
+            window.maximize()
+            time.sleep(1)
+        except Exception:
+            pass
+
+        try:
             window.restore()
-        window.activate()
-        time.sleep(1)
+            time.sleep(1)
+        except Exception:
+            pass
+
+        try:
+            window.maximize()
+            time.sleep(1)
+        except Exception:
+            pass
+
+    def _is_screen_visible(self, screenshot_path: Path) -> bool:
+        if not screenshot_path.exists():
+            raise RuntimeError(f"No existe la captura de referencia requerida: {screenshot_path}")
+
+        search_region = self._get_siesa_window_region()
+        if search_region:
+            similarity = self._window_similarity(screenshot_path, search_region)
+            if similarity >= SCREEN_VISUAL_SIMILARITY_THRESHOLD:
+                return True
+
+        locate_kwargs = {"grayscale": True}
+        if SCREEN_MATCH_CONFIDENCE:
+            locate_kwargs["confidence"] = SCREEN_MATCH_CONFIDENCE
+        reference_size = self._get_image_size(screenshot_path)
+        if search_region and reference_size:
+            _, _, region_width, region_height = search_region
+            reference_width, reference_height = reference_size
+            if reference_width <= region_width and reference_height <= region_height:
+                locate_kwargs["region"] = search_region
+
+        try:
+            match = pyautogui.locateOnScreen(str(screenshot_path), **locate_kwargs)
+        except pyautogui.ImageNotFoundException:
+            return False
+        except TypeError:
+            fallback_kwargs = {"grayscale": True}
+            if "region" in locate_kwargs:
+                fallback_kwargs["region"] = locate_kwargs["region"]
+            match = pyautogui.locateOnScreen(str(screenshot_path), **fallback_kwargs)
+        except NotImplementedError:
+            fallback_kwargs = {"grayscale": True}
+            if "region" in locate_kwargs:
+                fallback_kwargs["region"] = locate_kwargs["region"]
+            match = pyautogui.locateOnScreen(str(screenshot_path), **fallback_kwargs)
+        except ValueError as exc:
+            if "region" in locate_kwargs and "needle dimension" in str(exc).lower():
+                fallback_kwargs = {"grayscale": True}
+                if SCREEN_MATCH_CONFIDENCE:
+                    fallback_kwargs["confidence"] = SCREEN_MATCH_CONFIDENCE
+                try:
+                    match = pyautogui.locateOnScreen(str(screenshot_path), **fallback_kwargs)
+                except pyautogui.ImageNotFoundException:
+                    return False
+            else:
+                raise RuntimeError(f"No fue posible validar la pantalla usando {screenshot_path.name}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"No fue posible validar la pantalla usando {screenshot_path.name}: {exc}") from exc
+
+        return match is not None
+
+    def _window_similarity(self, screenshot_path: Path, region: tuple[int, int, int, int]) -> float:
+        left, top, width, height = region
+        current = pyautogui.screenshot(region=(left, top, width, height))
+
+        with Image.open(screenshot_path) as reference:
+            reference_gray = ImageOps.grayscale(reference)
+            current_gray = ImageOps.grayscale(current)
+
+            if current_gray.size != reference_gray.size:
+                current_gray = current_gray.resize(reference_gray.size)
+
+            reference_crop = self._crop_for_similarity(reference_gray)
+            current_crop = self._crop_for_similarity(current_gray)
+
+            if current_crop.size != reference_crop.size:
+                current_crop = current_crop.resize(reference_crop.size)
+
+            diff = ImageChops.difference(reference_crop, current_crop)
+            mean_diff = ImageStat.Stat(diff).mean[0]
+
+        return max(0.0, 1.0 - (mean_diff / 255.0))
+
+    def _crop_for_similarity(self, image: Image.Image) -> Image.Image:
+        width, height = image.size
+
+        left = int(width * 0.08)
+        top = int(height * 0.10)
+        right = int(width * 0.92)
+        bottom = int(height * 0.90)
+
+        return image.crop((left, top, right, bottom))
 
     def _close_siesa_if_open(self) -> None:
         windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
@@ -312,8 +530,28 @@ class RpaBot:
         pyautogui.hotkey("alt", "f4")
         time.sleep(2)
 
-    def _list_p99_files(self) -> set[Path]:
-        return {path for path in SIESA_P99_PATH.glob("*.P99")}
+    def _snapshot_p99_files(self) -> dict[Path, tuple[int, int]]:
+        snapshot: dict[Path, tuple[int, int]] = {}
+
+        for path in SIESA_P99_PATH.glob("*.P99"):
+            stat = path.stat()
+            snapshot[path] = (stat.st_mtime_ns, stat.st_size)
+
+        return snapshot
+
+    def _detect_changed_p99_files(
+        self,
+        before_snapshot: dict[Path, tuple[int, int]],
+        after_snapshot: dict[Path, tuple[int, int]],
+    ) -> list[Path]:
+        changed: list[Path] = []
+
+        for path, after_meta in after_snapshot.items():
+            before_meta = before_snapshot.get(path)
+            if before_meta is None or before_meta != after_meta:
+                changed.append(path)
+
+        return sorted(changed)
 
     def _archive_local_file(self, local_path: Path) -> None:
         archive_name = f"{self.run_id}_{local_path.name}"
@@ -327,12 +565,36 @@ class RpaBot:
         except Exception as exc:  # noqa: BLE001
             self._log(f"No se pudo eliminar {s3_key} de S3: {exc}")
 
-    def _mark_processed(self, s3_key: str, file_name: str) -> None:
+    def _mark_processed(self, s3_key: str, file_name: str, object_version: dict[str, Any]) -> None:
         self.state.setdefault("processed_keys", {})[s3_key] = {
             "file_name": file_name,
+            "object_version": object_version,
             "run_id": self.run_id,
             "processed_at": self._iso_now(),
         }
+
+    def _build_object_version(self, item: dict[str, Any]) -> dict[str, Any]:
+        last_modified = item.get("LastModified")
+
+        return {
+            "etag": str(item.get("ETag", "")).strip('"'),
+            "size": int(item.get("Size", 0)),
+            "last_modified": last_modified.isoformat() if last_modified else None,
+        }
+
+    def _should_process_object(
+        self,
+        s3_key: str,
+        current_version: dict[str, Any],
+        processed_objects: dict[str, Any],
+    ) -> bool:
+        previous_entry = processed_objects.get(s3_key)
+        if not previous_entry:
+            return True
+
+        previous_version = previous_entry.get("object_version", {})
+
+        return previous_version != current_version
 
     def _ensure_directories(self) -> None:
         for path in [DOWNLOADS_DIR, ARCHIVE_DIR, LOGS_DIR]:
@@ -340,6 +602,10 @@ class RpaBot:
 
         if not SIESA_SHORTCUT_PATH.exists():
             raise RuntimeError(f"No se encontró el acceso directo de Siesa: {SIESA_SHORTCUT_PATH}")
+
+        for screenshot_path in [self.login_screenshot, self.import_screenshot]:
+            if not screenshot_path.exists():
+                raise RuntimeError(f"No existe la captura de referencia requerida: {screenshot_path}")
 
         for path in [SIESA_WORKING_DIR, SIESA_PEDIDOS_PATH, SIESA_P99_PATH]:
             if not path.exists():
@@ -412,6 +678,40 @@ class RpaBot:
         except OSError:
             return False
         return True
+
+    def _resolve_screenshot(self, pattern: str) -> Path:
+        matches = sorted(SCREENSHOTS_DIR.glob(pattern))
+        if not matches:
+            raise RuntimeError(f"No se encontró ninguna captura en {SCREENSHOTS_DIR} con el patrón {pattern}")
+        return matches[0]
+
+    def _save_debug_screenshot(self, screen_name: str) -> Path:
+        safe_name = screen_name.lower().replace(" ", "_")
+        debug_path = LOGS_DIR / f"debug_{safe_name}_{self.run_id}.png"
+        screenshot = pyautogui.screenshot()
+        screenshot.save(debug_path)
+        self._log(f"Captura de depuración guardada en {debug_path}")
+        return debug_path
+
+    def _get_siesa_window_region(self) -> tuple[int, int, int, int] | None:
+        windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+        if not windows:
+            return None
+
+        window = windows[0]
+        width = max(int(window.width), 1)
+        height = max(int(window.height), 1)
+        return (int(window.left), int(window.top), width, height)
+
+    def _get_image_size(self, image_path: Path) -> tuple[int, int] | None:
+        try:
+            import PIL.Image
+
+            with PIL.Image.open(image_path) as image:
+                return image.size
+        except Exception:
+            return None
+
 
 
 def main() -> int:

@@ -1,11 +1,16 @@
 from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # Acceso a Siesa
 SIESA_SHORTCUT_PATH = Path(r"D:\Escritorioo\SIESA.85 - GEB.lnk")
 SIESA_WORKING_DIR = Path(r"U:\uno85c")
 SIESA_PEDIDOS_PATH = Path(r"U:\uno85c\eurobelleza\trm")
 SIESA_P99_PATH = Path(r"U:\uno85c\eurobelleza\prt")
 SIESA_WINDOW_TITLE = "UNO8L"
+SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+LOGIN_SCREENSHOT_PATTERN = "Login.png"
+IMPORT_SCREENSHOT_PATTERN = "Import*.png"
 
 SIESA_USER = "PAGINA"
 SIESA_PASSWORD = "PAGINA"
@@ -14,6 +19,12 @@ SIESA_PASSWORD = "PAGINA"
 LOGIN_WAIT_SECONDS = 8
 MENU_STEP_WAIT_SECONDS = 2
 FILE_PROCESS_WAIT_SECONDS = 6
+SCREEN_CHECK_TIMEOUT_SECONDS = 20
+SCREEN_CHECK_INTERVAL_SECONDS = 1
+SCREEN_MATCH_CONFIDENCE = 0.55
+SCREEN_VISUAL_SIMILARITY_THRESHOLD = 0.72
+SIESA_FORCE_MAXIMIZE = False
+SIESA_RESET_WINDOW_LAYOUT = True
 
 MENU_SEQUENCE = ["c", "v", "d", "p", "v"]
 IMPORT_SEQUENCE_PREFIX = ["enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]

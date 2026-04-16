@@ -5,7 +5,7 @@ a = Analysis(
     ['bot.py'],
     pathex=[],
     binaries=[],
-    datas=[('config.py', '.')],
+    datas=[('config.py', '.'), ('screenshots', 'screenshots')],
     hiddenimports=['boto3', 'botocore', 's3transfer', 'pyautogui', 'pillow', 'pyscreeze', 'pygetwindow', 'pymsgbox', 'pytweening'],
     hookspath=[],
     hooksconfig={},
