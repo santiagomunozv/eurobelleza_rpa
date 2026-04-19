@@ -59,6 +59,7 @@ from config import (
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.2
+PyAutoGuiFailSafeException = pyautogui.FailSafeException
 
 
 @dataclass
@@ -138,7 +139,10 @@ class RpaBot:
             self.run_summary["fatal_error"] = str(exc)
             self._log(f"Corrida fallida: {exc}")
             if siesa_opened:
-                self._close_siesa_if_open()
+                try:
+                    self._close_siesa_if_open()
+                except Exception as close_exc:  # noqa: BLE001
+                    self._log(f"No se pudo cerrar Siesa tras la falla: {close_exc}")
             self._finalize_and_upload_result()
             self._persist_state()
             traceback.print_exc()
@@ -223,17 +227,17 @@ class RpaBot:
         self._log("Iniciando sesión")
         self._ensure_screen_visible(self.login_screenshot, "pantalla de login de Siesa")
         self._activate_siesa_window()
-        pyautogui.write(SIESA_USER)
-        pyautogui.press("tab")
-        pyautogui.write(SIESA_PASSWORD)
-        pyautogui.press("enter")
+        self._write_text(SIESA_USER)
+        self._press_key("tab")
+        self._write_text(SIESA_PASSWORD)
+        self._press_key("enter")
         time.sleep(LOGIN_WAIT_SECONDS)
 
     def _navigate_to_import_menu(self) -> None:
         self._log("Navegando al menú de importación")
         self._activate_siesa_window()
         for key in MENU_SEQUENCE:
-            pyautogui.press(key)
+            self._press_key(key)
             time.sleep(MENU_STEP_WAIT_SECONDS)
         self._wait_for_screen(self.import_screenshot, "pantalla de importación de pedidos")
 
@@ -241,16 +245,16 @@ class RpaBot:
         self._ensure_screen_visible(self.import_screenshot, "pantalla de importación de pedidos")
         self._activate_siesa_window()
         for key in IMPORT_SEQUENCE_PREFIX:
-            pyautogui.press(key)
+            self._press_key(key)
             time.sleep(MENU_STEP_WAIT_SECONDS)
 
-        pyautogui.write(file_name)
+        self._write_text(file_name)
 
         for index, key in enumerate(IMPORT_SEQUENCE_SUFFIX):
             if len(key) > 1 and key.lower() not in {"enter", "tab", "f2", "f10"}:
-                pyautogui.write(key)
+                self._write_text(key)
             else:
-                pyautogui.press(key)
+                self._press_key(key)
 
             if key == "S" and index + 1 < len(IMPORT_SEQUENCE_SUFFIX) and IMPORT_SEQUENCE_SUFFIX[index + 1] == "enter":
                 time.sleep(LOGIN_WAIT_SECONDS)
@@ -398,7 +402,7 @@ class RpaBot:
             if not window.isMaximized:
                 pyautogui.hotkey("alt", "space")
                 time.sleep(0.5)
-                pyautogui.press("x")
+                self._press_key("x")
                 time.sleep(1)
         except Exception:
             pass
@@ -458,6 +462,11 @@ class RpaBot:
             match = pyautogui.locateOnScreen(str(screenshot_path), **locate_kwargs)
         except pyautogui.ImageNotFoundException:
             return False
+        except PyAutoGuiFailSafeException as exc:
+            raise RuntimeError(
+                "PyAutoGUI activó el fail-safe porque el cursor llegó a una esquina de la pantalla "
+                "durante la validación visual."
+            ) from exc
         except TypeError:
             fallback_kwargs = {"grayscale": True}
             if "region" in locate_kwargs:
@@ -486,7 +495,7 @@ class RpaBot:
 
     def _window_similarity(self, screenshot_path: Path, region: tuple[int, int, int, int]) -> float:
         left, top, width, height = region
-        current = pyautogui.screenshot(region=(left, top, width, height))
+        current = self._take_screenshot(region=(left, top, width, height))
 
         with Image.open(screenshot_path) as reference:
             reference_gray = ImageOps.grayscale(reference)
@@ -527,7 +536,7 @@ class RpaBot:
             window.restore()
         window.activate()
         time.sleep(1)
-        pyautogui.hotkey("alt", "f4")
+        self._hotkey("alt", "f4")
         time.sleep(2)
 
     def _snapshot_p99_files(self) -> dict[Path, tuple[int, int]]:
@@ -688,7 +697,7 @@ class RpaBot:
     def _save_debug_screenshot(self, screen_name: str) -> Path:
         safe_name = screen_name.lower().replace(" ", "_")
         debug_path = LOGS_DIR / f"debug_{safe_name}_{self.run_id}.png"
-        screenshot = pyautogui.screenshot()
+        screenshot = self._take_screenshot()
         screenshot.save(debug_path)
         self._log(f"Captura de depuración guardada en {debug_path}")
         return debug_path
@@ -711,6 +720,42 @@ class RpaBot:
                 return image.size
         except Exception:
             return None
+
+    def _press_key(self, key: str) -> None:
+        try:
+            pyautogui.press(key)
+        except PyAutoGuiFailSafeException as exc:
+            raise RuntimeError(
+                "PyAutoGUI activó el fail-safe porque el cursor llegó a una esquina de la pantalla. "
+                "La corrida se detuvo para evitar enviar teclas fuera de contexto."
+            ) from exc
+
+    def _write_text(self, text: str) -> None:
+        try:
+            pyautogui.write(text)
+        except PyAutoGuiFailSafeException as exc:
+            raise RuntimeError(
+                "PyAutoGUI activó el fail-safe porque el cursor llegó a una esquina de la pantalla. "
+                "La corrida se detuvo para evitar escribir fuera de contexto."
+            ) from exc
+
+    def _hotkey(self, *keys: str) -> None:
+        try:
+            pyautogui.hotkey(*keys)
+        except PyAutoGuiFailSafeException as exc:
+            raise RuntimeError(
+                "PyAutoGUI activó el fail-safe porque el cursor llegó a una esquina de la pantalla."
+            ) from exc
+
+    def _take_screenshot(self, region: tuple[int, int, int, int] | None = None):
+        try:
+            if region is None:
+                return pyautogui.screenshot()
+            return pyautogui.screenshot(region=region)
+        except PyAutoGuiFailSafeException as exc:
+            raise RuntimeError(
+                "PyAutoGUI activó el fail-safe porque el cursor llegó a una esquina de la pantalla."
+            ) from exc
 
 
 
