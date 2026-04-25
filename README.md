@@ -35,8 +35,8 @@ Editar [config.py](./config.py) y ajustar:
 
 Puntos importantes:
 
-- `DELETE_SOURCE_OBJECTS` queda en `False` por defecto porque la policy actual de Windows no tiene `DeleteObject` sobre `pedidos/`.
-- El bot guarda un `state.json` local para no reprocesar los mismos objetos de S3 en cada corte.
+- El bot no elimina los `.PE0` de `pedidos/`; Laravel los limpia al consumir el resultado de la corrida.
+- El bot guarda un `state.json` local como defensa adicional para no reprocesar los mismos objetos de S3 antes de que Laravel los limpie.
 
 ## Ejecución manual
 

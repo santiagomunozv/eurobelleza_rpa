@@ -46,6 +46,3 @@ AWS_BUCKET = "eurobelleza-siesa"
 S3_PEDIDOS_PREFIX = "pedidos/"
 S3_ERRORES_PREFIX = "errores/"
 S3_RESULTADOS_PREFIX = "resultados/"
-
-# Mantener en False mientras la policy de Windows no tenga DeleteObject sobre pedidos/
-DELETE_SOURCE_OBJECTS = False

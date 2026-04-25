@@ -18,13 +18,17 @@ import pyautogui
 import pygetwindow as gw
 from PIL import Image, ImageChops, ImageOps, ImageStat
 
+try:
+    import pyperclip
+except ImportError:
+    pyperclip = None
+
 from config import (
     ARCHIVE_DIR,
     AWS_ACCESS_KEY,
     AWS_BUCKET,
     AWS_REGION,
     AWS_SECRET_KEY,
-    DELETE_SOURCE_OBJECTS,
     DOWNLOADS_DIR,
     FILE_PROCESS_WAIT_SECONDS,
     IMPORT_SEQUENCE_PREFIX,
@@ -76,6 +80,13 @@ class ErrorResult:
     s3_key: str
     p99_key: str | None
     errors: list[str]
+    warnings: list[str]
+
+
+@dataclass
+class P99ParseResult:
+    errors: list[str]
+    warnings: list[str]
 
 
 class RpaBot:
@@ -100,7 +111,9 @@ class RpaBot:
             "files_detected": [],
             "files_attempted": [],
             "files_without_error": [],
+            "files_with_warning": [],
             "files_with_error": [],
+            "files_unresolved": [],
             "fatal_error": None,
             "log_file": str(self.log_path),
         }
@@ -192,20 +205,33 @@ class RpaBot:
 
         if new_p99_files:
             error_result = self._handle_p99_files(order, new_p99_files)
-            self.run_summary["files_with_error"].append({
-                "file": error_result.file_name,
-                "s3_key": error_result.s3_key,
-                "p99_key": error_result.p99_key,
-                "errors": error_result.errors,
-            })
+            if error_result.errors:
+                self.run_summary["files_with_error"].append({
+                    "file": error_result.file_name,
+                    "s3_key": error_result.s3_key,
+                    "p99_key": error_result.p99_key,
+                    "errors": error_result.errors,
+                    "warnings": error_result.warnings,
+                })
+            elif error_result.warnings:
+                self.run_summary["files_with_warning"].append({
+                    "file": error_result.file_name,
+                    "s3_key": error_result.s3_key,
+                    "p99_key": error_result.p99_key,
+                    "warnings": error_result.warnings,
+                })
+            else:
+                self.run_summary["files_unresolved"].append({
+                    "file": error_result.file_name,
+                    "s3_key": error_result.s3_key,
+                    "p99_key": error_result.p99_key,
+                    "reason": "Siesa generó un P99, pero el bot no pudo extraer advertencias ni errores.",
+                })
         else:
             self.run_summary["files_without_error"].append(order.file_name)
 
         self._mark_processed(order.s3_key, order.file_name, order.object_version)
         self._archive_local_file(order.local_download_path)
-
-        if DELETE_SOURCE_OBJECTS:
-            self._delete_source_object(order.s3_key)
 
         if target_path.exists():
             target_path.unlink()
@@ -227,11 +253,12 @@ class RpaBot:
         self._log("Iniciando sesión")
         self._ensure_screen_visible(self.login_screenshot, "pantalla de login de Siesa")
         self._activate_siesa_window()
-        self._write_text(SIESA_USER)
+        self._paste_text(SIESA_USER)
         self._press_key("tab")
-        self._write_text(SIESA_PASSWORD)
+        self._paste_text(SIESA_PASSWORD)
         self._press_key("enter")
         time.sleep(LOGIN_WAIT_SECONDS)
+        self._ensure_screen_not_visible(self.login_screenshot, "pantalla de login de Siesa")
 
     def _navigate_to_import_menu(self) -> None:
         self._log("Navegando al menú de importación")
@@ -265,11 +292,13 @@ class RpaBot:
         self._log(f"Se detectaron {len(p99_files)} archivo(s) P99 para {order.file_name}")
 
         all_errors: list[str] = []
+        all_warnings: list[str] = []
         uploaded_key: str | None = None
 
         for p99_file in p99_files:
-            errors = self._parse_p99_errors(p99_file)
-            all_errors.extend(errors)
+            parsed = self._parse_p99_file(p99_file)
+            all_errors.extend(parsed.errors)
+            all_warnings.extend(parsed.warnings)
 
             uploaded_key = (
                 f"{S3_ERRORES_PREFIX}{self.run_id}_{Path(order.file_name).stem}_{p99_file.name}"
@@ -279,19 +308,20 @@ class RpaBot:
             p99_file.unlink()
 
         unique_errors = list(dict.fromkeys(all_errors))
-        if not unique_errors:
-            unique_errors = ["Siesa generó un P99 sin detalle reconocible."]
+        unique_warnings = list(dict.fromkeys(all_warnings))
 
         return ErrorResult(
             file_name=order.file_name,
             s3_key=order.s3_key,
             p99_key=uploaded_key,
             errors=unique_errors,
+            warnings=unique_warnings,
         )
 
-    def _parse_p99_errors(self, p99_file: Path) -> list[str]:
+    def _parse_p99_file(self, p99_file: Path) -> P99ParseResult:
         lines = p99_file.read_text(encoding="latin-1", errors="ignore").splitlines()
         errors: list[str] = []
+        warnings: list[str] = []
 
         for line in lines:
             cleaned_line = line.strip()
@@ -303,7 +333,7 @@ class RpaBot:
                 "GENERACION DE PEDIDOS" in cleaned_line
                 or "PEDIDO" in cleaned_line and "CAMPO_INCONSISTENTE" in cleaned_line
                 or "FIN REPORTE" in cleaned_line
-                or cleaned_line[0] in {"U", "A", "+", "-", "=", "_", "³", "À", "Ä", "Ã", "Ú", "Ù", "¿", "´"}
+                or cleaned_line[0] in {"U", "A", "+", "-", "=", "_", "³", "À", "Ä", "Ã", "Ú", "Ù", "¿", "´", "⁄", "ƒ", "≥", "√", "¥", "Ÿ"}
             ):
                 continue
 
@@ -312,13 +342,19 @@ class RpaBot:
                 continue
 
             warning_marker, _, field_code, message = match.groups()
+            clean_message = self._format_p99_message(field_code, message)
+
             if warning_marker == "*":
+                warnings.append(clean_message)
                 continue
 
-            clean_message = f"[{field_code}] {message.strip()}"
             errors.append(clean_message)
 
-        return errors
+        return P99ParseResult(errors=errors, warnings=warnings)
+
+    def _format_p99_message(self, field_code: str, message: str) -> str:
+        clean_message = re.sub(r"^\d{2}\s+", "", message.strip())
+        return f"[{field_code}] {clean_message}"
 
     def _finalize_and_upload_result(self) -> None:
         self.run_summary["finished_at"] = self._iso_now()
@@ -360,6 +396,14 @@ class RpaBot:
         if not self._is_screen_visible(screenshot_path):
             raise RuntimeError(
                 f"Siesa no está en la {screen_name}. La corrida se detendrá para evitar marcar pedidos como exitosos."
+            )
+
+    def _ensure_screen_not_visible(self, screenshot_path: Path, screen_name: str) -> None:
+        self._activate_siesa_window()
+        if self._is_screen_visible(screenshot_path):
+            raise RuntimeError(
+                f"Siesa sigue en la {screen_name} después del login. "
+                "La corrida se detendrá para evitar marcar pedidos como exitosos."
             )
 
     def _try_activate_siesa_window(self) -> bool:
@@ -738,6 +782,16 @@ class RpaBot:
                 "PyAutoGUI activó el fail-safe porque el cursor llegó a una esquina de la pantalla. "
                 "La corrida se detuvo para evitar escribir fuera de contexto."
             ) from exc
+
+    def _paste_text(self, text: str) -> None:
+        try:
+            if pyperclip is None:
+                raise RuntimeError("pyperclip no está instalado")
+            pyperclip.copy(text)
+            self._hotkey("ctrl", "v")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"No se pudo pegar texto desde portapapeles, se usará escritura por teclado: {exc}")
+            self._write_text(text)
 
     def _hotkey(self, *keys: str) -> None:
         try:
