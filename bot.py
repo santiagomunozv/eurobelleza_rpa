@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import traceback
+import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,11 +18,6 @@ import boto3
 import pyautogui
 import pygetwindow as gw
 from PIL import Image, ImageChops, ImageOps, ImageStat
-
-try:
-    import pyperclip
-except ImportError:
-    pyperclip = None
 
 from config import (
     ARCHIVE_DIR,
@@ -253,9 +249,9 @@ class RpaBot:
         self._log("Iniciando sesión")
         self._ensure_screen_visible(self.login_screenshot, "pantalla de login de Siesa")
         self._activate_siesa_window()
-        self._paste_text(SIESA_USER)
+        self._write_login_text(SIESA_USER)
         self._press_key("tab")
-        self._paste_text(SIESA_PASSWORD)
+        self._write_login_text(SIESA_PASSWORD)
         self._press_key("enter")
         time.sleep(LOGIN_WAIT_SECONDS)
         self._ensure_screen_not_visible(self.login_screenshot, "pantalla de login de Siesa")
@@ -400,7 +396,7 @@ class RpaBot:
 
     def _ensure_screen_not_visible(self, screenshot_path: Path, screen_name: str) -> None:
         self._activate_siesa_window()
-        if self._is_screen_visible(screenshot_path):
+        if self._is_screen_template_visible(screenshot_path):
             raise RuntimeError(
                 f"Siesa sigue en la {screen_name} después del login. "
                 "La corrida se detendrá para evitar marcar pedidos como exitosos."
@@ -491,6 +487,19 @@ class RpaBot:
             similarity = self._window_similarity(screenshot_path, search_region)
             if similarity >= SCREEN_VISUAL_SIMILARITY_THRESHOLD:
                 return True
+
+        return self._is_screen_template_visible(screenshot_path, search_region)
+
+    def _is_screen_template_visible(
+        self,
+        screenshot_path: Path,
+        search_region: tuple[int, int, int, int] | None = None,
+    ) -> bool:
+        if not screenshot_path.exists():
+            raise RuntimeError(f"No existe la captura de referencia requerida: {screenshot_path}")
+
+        if search_region is None:
+            search_region = self._get_siesa_window_region()
 
         locate_kwargs = {"grayscale": True}
         if SCREEN_MATCH_CONFIDENCE:
@@ -783,15 +792,25 @@ class RpaBot:
                 "La corrida se detuvo para evitar escribir fuera de contexto."
             ) from exc
 
-    def _paste_text(self, text: str) -> None:
+    def _write_login_text(self, text: str) -> None:
+        previous_caps_lock = self._is_caps_lock_on()
+
         try:
-            if pyperclip is None:
-                raise RuntimeError("pyperclip no está instalado")
-            pyperclip.copy(text)
-            self._hotkey("ctrl", "v")
-        except Exception as exc:  # noqa: BLE001
-            self._log(f"No se pudo pegar texto desde portapapeles, se usará escritura por teclado: {exc}")
-            self._write_text(text)
+            self._set_caps_lock(True)
+            self._write_text(text.lower())
+        finally:
+            self._set_caps_lock(previous_caps_lock)
+
+    def _is_caps_lock_on(self) -> bool:
+        try:
+            return bool(ctypes.windll.user32.GetKeyState(0x14) & 1)
+        except Exception:
+            return False
+
+    def _set_caps_lock(self, enabled: bool) -> None:
+        if self._is_caps_lock_on() != enabled:
+            self._press_key("capslock")
+            time.sleep(0.2)
 
     def _hotkey(self, *keys: str) -> None:
         try:
