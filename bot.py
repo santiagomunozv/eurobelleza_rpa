@@ -110,6 +110,7 @@ class RpaBot:
             "files_with_warning": [],
             "files_with_error": [],
             "files_unresolved": [],
+            "files_consumed_by_siesa": [],
             "fatal_error": None,
             "log_file": str(self.log_path),
         }
@@ -197,34 +198,81 @@ class RpaBot:
         time.sleep(FILE_PROCESS_WAIT_SECONDS)
         after_p99 = self._snapshot_p99_files()
 
+        consumed_by_siesa = not target_path.exists()
         new_p99_files = self._detect_changed_p99_files(before_p99, after_p99)
+
+        if consumed_by_siesa:
+            self._log(f"Siesa consumió el archivo {order.file_name} desde trm")
+            self.run_summary["files_consumed_by_siesa"].append(order.file_name)
+        else:
+            self._log(f"Siesa no consumió el archivo {order.file_name}; sigue en trm")
 
         if new_p99_files:
             error_result = self._handle_p99_files(order, new_p99_files)
-            if error_result.errors:
+
+            if consumed_by_siesa and not error_result.errors:
+                if error_result.warnings:
+                    self.run_summary["files_with_warning"].append({
+                        "file": error_result.file_name,
+                        "s3_key": error_result.s3_key,
+                        "p99_key": error_result.p99_key,
+                        "warnings": error_result.warnings,
+                        "consumed_by_siesa": True,
+                    })
+                else:
+                    self.run_summary["files_with_warning"].append({
+                        "file": error_result.file_name,
+                        "s3_key": error_result.s3_key,
+                        "p99_key": error_result.p99_key,
+                        "warnings": ["Siesa consumió el PE0, pero generó un P99 sin detalle reconocible."],
+                        "consumed_by_siesa": True,
+                    })
+            elif consumed_by_siesa and error_result.errors:
+                self.run_summary["files_unresolved"].append({
+                    "file": error_result.file_name,
+                    "s3_key": error_result.s3_key,
+                    "p99_key": error_result.p99_key,
+                    "reason": "Siesa consumió el PE0, pero el P99 contiene errores reales. Requiere revisión manual.",
+                    "errors": error_result.errors,
+                    "warnings": error_result.warnings,
+                    "consumed_by_siesa": True,
+                })
+            elif error_result.errors:
                 self.run_summary["files_with_error"].append({
                     "file": error_result.file_name,
                     "s3_key": error_result.s3_key,
                     "p99_key": error_result.p99_key,
                     "errors": error_result.errors,
                     "warnings": error_result.warnings,
+                    "consumed_by_siesa": False,
                 })
             elif error_result.warnings:
-                self.run_summary["files_with_warning"].append({
+                self.run_summary["files_unresolved"].append({
                     "file": error_result.file_name,
                     "s3_key": error_result.s3_key,
                     "p99_key": error_result.p99_key,
+                    "reason": "Siesa generó advertencias, pero no consumió el PE0 desde trm.",
                     "warnings": error_result.warnings,
+                    "consumed_by_siesa": False,
                 })
             else:
                 self.run_summary["files_unresolved"].append({
                     "file": error_result.file_name,
                     "s3_key": error_result.s3_key,
                     "p99_key": error_result.p99_key,
-                    "reason": "Siesa generó un P99, pero el bot no pudo extraer advertencias ni errores.",
+                    "reason": "Siesa generó un P99, pero el bot no pudo extraer advertencias ni errores y el PE0 no fue consumido desde trm.",
+                    "consumed_by_siesa": False,
                 })
-        else:
+        elif consumed_by_siesa:
             self.run_summary["files_without_error"].append(order.file_name)
+        else:
+            self.run_summary["files_unresolved"].append({
+                "file": order.file_name,
+                "s3_key": order.s3_key,
+                "p99_key": None,
+                "reason": "Siesa no consumió el PE0 desde trm y no generó P99 detectable.",
+                "consumed_by_siesa": False,
+            })
 
         self._mark_processed(order.s3_key, order.file_name, order.object_version)
         self._archive_local_file(order.local_download_path)
