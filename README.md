@@ -6,7 +6,8 @@ Proceso batch para Windows que:
 2. Los deja en la ruta de Siesa
 3. Ejecuta la importación en Siesa 8.5 por teclado
 4. Sube los `.P99` generados a `errores/`
-5. Sube un JSON de resultado a `resultados/`
+5. Genera el reporte `.P97` de confirmación y lo sube a `confirmaciones/`
+6. Sube un JSON de resultado a `resultados/`
 
 El bot ya no corre en loop infinito. La idea es ejecutarlo una vez por corrida desde el Programador de tareas de Windows.
 
@@ -49,6 +50,8 @@ Cada ejecución:
 - adquiere un lock local para evitar doble corrida
 - genera un log en `C:\eurobelleza_rpa\logs`
 - genera un JSON de resultado en `C:\eurobelleza_rpa\archive`
+- genera un `.P97` de confirmación para los últimos 15 días
+- sube el `.P97` a `s3://eurobelleza-siesa/confirmaciones/`
 - sube el resultado a `s3://eurobelleza-siesa/resultados/`
 
 ## Programador de tareas
@@ -95,6 +98,19 @@ JSON con esta forma:
   "files_attempted": ["00003663.PE0"],
   "files_without_error": ["00003663.PE0"],
   "files_with_error": [],
+  "p97": {
+    "enabled": true,
+    "generated": true,
+    "date_from": "2026-05-10",
+    "date_to": "2026-05-25",
+    "local_file": "U:\\uno85c\\eurobelleza\\prt\\UCVE1064.P97",
+    "s3_key": "confirmaciones/UCVE1064_20260510_20260525_20260525_190000.P97",
+    "error": null
+  },
   "fatal_error": null
 }
 ```
+
+### `confirmaciones/`
+
+Archivos `.P97` renombrados por rango y corrida. Laravel los usa como fuente de verdad para confirmar qué pedidos existen en Siesa.

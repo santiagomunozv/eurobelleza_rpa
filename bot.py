@@ -10,7 +10,7 @@ import traceback
 import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,12 @@ from config import (
     LOGS_DIR,
     MENU_SEQUENCE,
     MENU_STEP_WAIT_SECONDS,
+    P97_GENERATE_WITHOUT_ORDERS,
+    P97_LOOKBACK_DAYS,
+    P97_MENU_SEQUENCE,
+    P97_REPORT_ENABLED,
+    P97_REPORT_FILE_NAME,
+    P97_REPORT_SEQUENCE,
     SCREENSHOTS_DIR,
     SCREEN_CHECK_INTERVAL_SECONDS,
     SCREEN_MATCH_CONFIDENCE,
@@ -44,9 +50,11 @@ from config import (
     SIESA_FORCE_MAXIMIZE,
     SIESA_RESET_WINDOW_LAYOUT,
     S3_ERRORES_PREFIX,
+    S3_CONFIRMACIONES_PREFIX,
     S3_PEDIDOS_PREFIX,
     S3_RESULTADOS_PREFIX,
     SIESA_PASSWORD,
+    SIESA_P97_PATH,
     SIESA_P99_PATH,
     SIESA_PEDIDOS_PATH,
     SIESA_SHORTCUT_PATH,
@@ -111,6 +119,15 @@ class RpaBot:
             "files_with_error": [],
             "files_unresolved": [],
             "files_consumed_by_siesa": [],
+            "p97": {
+                "enabled": P97_REPORT_ENABLED,
+                "generated": False,
+                "date_from": None,
+                "date_to": None,
+                "local_file": None,
+                "s3_key": None,
+                "error": None,
+            },
             "fatal_error": None,
             "log_file": str(self.log_path),
         }
@@ -127,7 +144,10 @@ class RpaBot:
 
                 if not pending_orders:
                     self._log("No hay archivos nuevos por procesar")
-                    self._close_siesa_if_open()
+                    if P97_GENERATE_WITHOUT_ORDERS:
+                        self._generate_p97_from_clean_session()
+                    else:
+                        self._close_siesa_if_open()
                     self._finalize_and_upload_result()
                     return 0
 
@@ -141,6 +161,9 @@ class RpaBot:
 
                 if siesa_opened:
                     self._close_siesa_if_open()
+                    siesa_opened = False
+
+                self._generate_p97_from_clean_session()
                 self._finalize_and_upload_result()
                 self._persist_state()
                 self._log("Corrida finalizada correctamente")
@@ -331,6 +354,102 @@ class RpaBot:
                 time.sleep(LOGIN_WAIT_SECONDS)
             else:
                 time.sleep(MENU_STEP_WAIT_SECONDS)
+
+    def _generate_p97_from_clean_session(self) -> None:
+        if not P97_REPORT_ENABLED:
+            self._log("Generación P97 deshabilitada por configuración")
+            return
+
+        self._log("Generando reporte P97 desde sesión limpia")
+        date_from, date_to = self._p97_date_range()
+        self.run_summary["p97"]["date_from"] = date_from.strftime("%Y-%m-%d")
+        self.run_summary["p97"]["date_to"] = date_to.strftime("%Y-%m-%d")
+
+        try:
+            self._close_siesa_if_open()
+            self._open_siesa()
+            self._login()
+            generated_file = self._generate_p97_report(date_from, date_to)
+            self._close_siesa_if_open()
+            self._upload_p97_file(generated_file, date_from, date_to)
+        except Exception as exc:  # noqa: BLE001
+            self.run_summary["p97"]["error"] = str(exc)
+            self._log(f"No se pudo generar o subir el P97: {exc}")
+            try:
+                self._close_siesa_if_open()
+            except Exception as close_exc:  # noqa: BLE001
+                self._log(f"No se pudo cerrar Siesa tras falla P97: {close_exc}")
+
+    def _p97_date_range(self) -> tuple[datetime, datetime]:
+        date_to = datetime.now()
+        date_from = date_to - timedelta(days=P97_LOOKBACK_DAYS)
+
+        return date_from, date_to
+
+    def _generate_p97_report(self, date_from: datetime, date_to: datetime) -> Path:
+        self._log(
+            "Navegando al reporte P97 "
+            f"desde {date_from.strftime('%Y-%m-%d')} hasta {date_to.strftime('%Y-%m-%d')}"
+        )
+        self._activate_siesa_window()
+        p97_file = SIESA_P97_PATH / P97_REPORT_FILE_NAME
+        before_meta = self._file_meta(p97_file)
+
+        for token in P97_MENU_SEQUENCE:
+            self._execute_sequence_token(token, date_from, date_to)
+
+        for token in P97_REPORT_SEQUENCE:
+            self._execute_sequence_token(token, date_from, date_to)
+
+        after_meta = self._file_meta(p97_file)
+        if after_meta is None:
+            raise RuntimeError(f"Siesa no generó el archivo P97 esperado: {p97_file}")
+
+        if before_meta is not None and after_meta == before_meta:
+            raise RuntimeError(f"El archivo P97 no cambió después de generar el reporte: {p97_file}")
+
+        self.run_summary["p97"]["generated"] = True
+        self.run_summary["p97"]["local_file"] = str(p97_file)
+
+        return p97_file
+
+    def _execute_sequence_token(self, token: Any, date_from: datetime, date_to: datetime) -> None:
+        if isinstance(token, dict):
+            wait_seconds = token.get("wait")
+            if wait_seconds is not None:
+                time.sleep(float(wait_seconds))
+            return
+
+        value = str(token)
+        if value == "{date_from}":
+            self._write_text(date_from.strftime("%y%m%d"))
+        elif value == "{date_to}":
+            self._write_text(date_to.strftime("%y%m%d"))
+        elif len(value) > 1 and value.lower() not in {"enter", "tab", "f2", "f10"}:
+            self._write_text(value)
+        else:
+            self._press_key(value)
+
+        time.sleep(MENU_STEP_WAIT_SECONDS)
+
+    def _upload_p97_file(self, p97_file: Path, date_from: datetime, date_to: datetime) -> None:
+        s3_name = (
+            f"UCVE1064_{date_from.strftime('%Y%m%d')}_"
+            f"{date_to.strftime('%Y%m%d')}_{self.run_id}.P97"
+        )
+        s3_key = f"{S3_CONFIRMACIONES_PREFIX}{s3_name}"
+
+        self._log(f"Subiendo P97 {p97_file} -> s3://{AWS_BUCKET}/{s3_key}")
+        self.s3_client.upload_file(str(p97_file), AWS_BUCKET, s3_key)
+        self.run_summary["p97"]["s3_key"] = s3_key
+
+    def _file_meta(self, path: Path) -> tuple[int, int] | None:
+        if not path.exists():
+            return None
+
+        stat = path.stat()
+
+        return (stat.st_mtime_ns, stat.st_size)
 
     def _handle_p99_files(self, order: PendingOrder, p99_files: list[Path]) -> ErrorResult:
         self._log(f"Se detectaron {len(p99_files)} archivo(s) P99 para {order.file_name}")
@@ -717,7 +836,7 @@ class RpaBot:
             if not screenshot_path.exists():
                 raise RuntimeError(f"No existe la captura de referencia requerida: {screenshot_path}")
 
-        for path in [SIESA_WORKING_DIR, SIESA_PEDIDOS_PATH, SIESA_P99_PATH]:
+        for path in [SIESA_WORKING_DIR, SIESA_PEDIDOS_PATH, SIESA_P99_PATH, SIESA_P97_PATH]:
             if not path.exists():
                 raise RuntimeError(f"No existe la ruta requerida de Siesa: {path}")
 

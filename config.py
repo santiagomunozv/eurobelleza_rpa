@@ -7,6 +7,7 @@ SIESA_SHORTCUT_PATH = Path(r"D:\Escritorioo\SIESA.85 - GEB.lnk")
 SIESA_WORKING_DIR = Path(r"U:\uno85c")
 SIESA_PEDIDOS_PATH = Path(r"U:\uno85c\eurobelleza\trm")
 SIESA_P99_PATH = Path(r"U:\uno85c\eurobelleza\prt")
+SIESA_P97_PATH = Path(r"U:\uno85c\eurobelleza\prt")
 SIESA_WINDOW_TITLE = "UNO8L"
 SCREENSHOTS_DIR = BASE_DIR / "screenshots"
 LOGIN_SCREENSHOT_PATTERN = "Login.png"
@@ -30,6 +31,27 @@ MENU_SEQUENCE = ["c", "v", "d", "p", "v"]
 IMPORT_SEQUENCE_PREFIX = ["enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]
 IMPORT_SEQUENCE_SUFFIX = ["enter", "1", "1", "D", "99", "0", "S", "enter", "f10"]
 
+# Generación del reporte P97 de pedidos de venta.
+P97_REPORT_ENABLED = True
+P97_GENERATE_WITHOUT_ORDERS = True
+P97_LOOKBACK_DAYS = 15
+P97_REPORT_FILE_NAME = "UCVE1064.P97"
+P97_PRE_DOWNLOAD_WAIT_SECONDS = 5
+P97_REPORT_WAIT_SECONDS = 15
+P97_MENU_SEQUENCE = ["c", "v", "d", "l", "l", "enter", "enter"]
+P97_REPORT_SEQUENCE = [
+    "{date_from}",
+    "{date_to}",
+    "0", "0", "0", "0", "0", "0", "0", "0",
+    "enter",
+    {"wait": P97_PRE_DOWNLOAD_WAIT_SECONDS},
+    "D",
+    "97",
+    "0",
+    "S",
+    {"wait": P97_REPORT_WAIT_SECONDS},
+]
+
 # Carpeta de trabajo local del bot
 BOT_WORKDIR = Path(r"D:\Escritorioo\eurobelleza_rpa")
 DOWNLOADS_DIR = BOT_WORKDIR / "downloads"
@@ -46,3 +68,4 @@ AWS_BUCKET = "eurobelleza-siesa"
 S3_PEDIDOS_PREFIX = "pedidos/"
 S3_ERRORES_PREFIX = "errores/"
 S3_RESULTADOS_PREFIX = "resultados/"
+S3_CONFIRMACIONES_PREFIX = "confirmaciones/"
