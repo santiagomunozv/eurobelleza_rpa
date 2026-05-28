@@ -47,6 +47,7 @@ from config import (
     SCREEN_MATCH_CONFIDENCE,
     SCREEN_CHECK_TIMEOUT_SECONDS,
     SCREEN_VISUAL_SIMILARITY_THRESHOLD,
+    SIESA_OPEN_TIMEOUT_SECONDS,
     SIESA_FORCE_MAXIMIZE,
     SIESA_RESET_WINDOW_LAYOUT,
     S3_ERRORES_PREFIX,
@@ -301,7 +302,7 @@ class RpaBot:
         self._archive_local_file(order.local_download_path)
 
         if target_path.exists():
-            target_path.unlink()
+            self._safe_unlink(target_path, "PE0 en trm")
 
     def _open_siesa(self) -> None:
         existing_windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
@@ -313,8 +314,24 @@ class RpaBot:
 
         self._log("Abriendo Siesa")
         subprocess.Popen([str(SIESA_SHORTCUT_PATH)], cwd=str(SIESA_WORKING_DIR), shell=True)
+        self._wait_for_siesa_window()
         self._wait_for_screen(self.login_screenshot, "pantalla de login de Siesa")
         self._activate_siesa_window()
+
+    def _wait_for_siesa_window(self) -> None:
+        deadline = time.time() + SIESA_OPEN_TIMEOUT_SECONDS
+
+        while time.time() < deadline:
+            windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+            if windows:
+                self._focus_window(windows[0], reset_layout=True)
+                return
+            time.sleep(SCREEN_CHECK_INTERVAL_SECONDS)
+
+        raise RuntimeError(
+            f"Siesa no abrió una ventana con el título '{SIESA_WINDOW_TITLE}' "
+            f"dentro de {SIESA_OPEN_TIMEOUT_SECONDS} segundos."
+        )
 
     def _login(self) -> None:
         self._log("Iniciando sesión")
@@ -325,7 +342,7 @@ class RpaBot:
         self._write_login_text(SIESA_PASSWORD)
         self._press_key("enter")
         time.sleep(LOGIN_WAIT_SECONDS)
-        self._ensure_screen_not_visible(self.login_screenshot, "pantalla de login de Siesa")
+        self._warn_if_screen_still_visible(self.login_screenshot, "pantalla de login de Siesa")
 
     def _navigate_to_import_menu(self) -> None:
         self._log("Navegando al menú de importación")
@@ -468,7 +485,7 @@ class RpaBot:
             )
             self._log(f"Subiendo {p99_file} -> s3://{AWS_BUCKET}/{uploaded_key}")
             self.s3_client.upload_file(str(p99_file), AWS_BUCKET, uploaded_key)
-            p99_file.unlink()
+            self._safe_unlink(p99_file, "P99")
 
         unique_errors = list(dict.fromkeys(all_errors))
         unique_warnings = list(dict.fromkeys(all_warnings))
@@ -567,6 +584,14 @@ class RpaBot:
             raise RuntimeError(
                 f"Siesa sigue en la {screen_name} después del login. "
                 "La corrida se detendrá para evitar marcar pedidos como exitosos."
+            )
+
+    def _warn_if_screen_still_visible(self, screenshot_path: Path, screen_name: str) -> None:
+        self._activate_siesa_window()
+        if self._is_screen_template_visible(screenshot_path):
+            self._log(
+                f"Advertencia: la validación visual todavía detecta la {screen_name} después del login. "
+                "Se continuará y la navegación siguiente validará si Siesa realmente quedó listo."
             )
 
     def _try_activate_siesa_window(self) -> bool:
@@ -786,6 +811,24 @@ class RpaBot:
         archive_name = f"{self.run_id}_{local_path.name}"
         archive_path = ARCHIVE_DIR / archive_name
         shutil.move(str(local_path), archive_path)
+
+    def _safe_unlink(self, path: Path, label: str, attempts: int = 5, wait_seconds: float = 1.0) -> bool:
+        for attempt in range(1, attempts + 1):
+            try:
+                path.unlink()
+                return True
+            except FileNotFoundError:
+                return True
+            except PermissionError as exc:
+                if attempt == attempts:
+                    self._log(
+                        f"No se pudo eliminar {label} local {path} porque sigue bloqueado: {exc}. "
+                        "La corrida continuará."
+                    )
+                    return False
+                time.sleep(wait_seconds)
+
+        return False
 
     def _delete_source_object(self, s3_key: str) -> None:
         try:
