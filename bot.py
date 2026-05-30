@@ -42,6 +42,8 @@ from config import (
     P97_REPORT_ENABLED,
     P97_REPORT_FILE_NAME,
     P97_REPORT_SEQUENCE,
+    P99_FILE_ACCESS_ATTEMPTS,
+    P99_FILE_ACCESS_WAIT_SECONDS,
     SCREENSHOTS_DIR,
     SCREEN_CHECK_INTERVAL_SECONDS,
     SCREEN_MATCH_CONFIDENCE,
@@ -175,8 +177,11 @@ class RpaBot:
             if siesa_opened:
                 try:
                     self._close_siesa_if_open()
+                    siesa_opened = False
                 except Exception as close_exc:  # noqa: BLE001
                     self._log(f"No se pudo cerrar Siesa tras la falla: {close_exc}")
+
+            self._generate_p97_after_failure()
             self._finalize_and_upload_result()
             self._persist_state()
             traceback.print_exc()
@@ -397,6 +402,16 @@ class RpaBot:
             except Exception as close_exc:  # noqa: BLE001
                 self._log(f"No se pudo cerrar Siesa tras falla P97: {close_exc}")
 
+    def _generate_p97_after_failure(self) -> None:
+        if not P97_REPORT_ENABLED:
+            return
+
+        if self.run_summary["p97"].get("s3_key"):
+            return
+
+        self._log("Intentando generar P97 después de una corrida fallida")
+        self._generate_p97_from_clean_session()
+
     def _p97_date_range(self) -> tuple[datetime, datetime]:
         date_to = datetime.now()
         date_from = date_to - timedelta(days=P97_LOOKBACK_DAYS)
@@ -476,7 +491,20 @@ class RpaBot:
         uploaded_key: str | None = None
 
         for p99_file in p99_files:
-            parsed = self._parse_p99_file(p99_file)
+            p99_copy = self._copy_file_when_readable(
+                p99_file,
+                LOGS_DIR / f"{self.run_id}_{Path(order.file_name).stem}_{p99_file.name}",
+                "P99",
+            )
+
+            if p99_copy is None:
+                all_warnings.append(
+                    f"No se pudo leer el P99 {p99_file.name} porque Siesa lo mantuvo bloqueado."
+                )
+                self._safe_unlink(p99_file, "P99")
+                continue
+
+            parsed = self._parse_p99_file(p99_copy)
             all_errors.extend(parsed.errors)
             all_warnings.extend(parsed.warnings)
 
@@ -484,7 +512,8 @@ class RpaBot:
                 f"{S3_ERRORES_PREFIX}{self.run_id}_{Path(order.file_name).stem}_{p99_file.name}"
             )
             self._log(f"Subiendo {p99_file} -> s3://{AWS_BUCKET}/{uploaded_key}")
-            self.s3_client.upload_file(str(p99_file), AWS_BUCKET, uploaded_key)
+            self.s3_client.upload_file(str(p99_copy), AWS_BUCKET, uploaded_key)
+            self._safe_unlink(p99_copy, "copia P99")
             self._safe_unlink(p99_file, "P99")
 
         unique_errors = list(dict.fromkeys(all_errors))
@@ -550,6 +579,10 @@ class RpaBot:
 
     def _activate_siesa_window(self) -> None:
         windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+        if not windows:
+            self._wait_for_siesa_window()
+            windows = gw.getWindowsWithTitle(SIESA_WINDOW_TITLE)
+
         if not windows:
             raise RuntimeError(f"No se encontró una ventana de Siesa con el título '{SIESA_WINDOW_TITLE}'")
 
@@ -811,6 +844,25 @@ class RpaBot:
         archive_name = f"{self.run_id}_{local_path.name}"
         archive_path = ARCHIVE_DIR / archive_name
         shutil.move(str(local_path), archive_path)
+
+    def _copy_file_when_readable(self, source: Path, destination: Path, label: str) -> Path | None:
+        for attempt in range(1, P99_FILE_ACCESS_ATTEMPTS + 1):
+            try:
+                shutil.copy2(source, destination)
+                return destination
+            except FileNotFoundError:
+                self._log(f"No se pudo copiar {label} {source}: el archivo ya no existe.")
+                return None
+            except PermissionError as exc:
+                if attempt == P99_FILE_ACCESS_ATTEMPTS:
+                    self._log(
+                        f"No se pudo copiar {label} {source} porque sigue bloqueado: {exc}. "
+                        "La corrida continuará."
+                    )
+                    return None
+                time.sleep(P99_FILE_ACCESS_WAIT_SECONDS)
+
+        return None
 
     def _safe_unlink(self, path: Path, label: str, attempts: int = 5, wait_seconds: float = 1.0) -> bool:
         for attempt in range(1, attempts + 1):
