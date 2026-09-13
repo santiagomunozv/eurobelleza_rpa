@@ -47,9 +47,9 @@ python bot.py
 
 Cada ejecución:
 
-- adquiere un lock local para evitar doble corrida
-- genera un log en `C:\eurobelleza_rpa\logs`
-- genera un JSON de resultado en `C:\eurobelleza_rpa\archive`
+- adquiere un lock local (`run.lock`) para evitar doble corrida
+- genera un log en `D:\Escritorioo\eurobelleza_rpa\logs`
+- genera un JSON de resultado en `D:\Escritorioo\eurobelleza_rpa\archive`
 - genera un `.P97` de confirmación para los últimos 15 días
 - sube el `.P97` a `s3://eurobelleza-siesa/confirmaciones/`
 - sube el resultado a `s3://eurobelleza-siesa/resultados/`
@@ -97,7 +97,10 @@ JSON con esta forma:
   "files_detected": ["00003663.PE0"],
   "files_attempted": ["00003663.PE0"],
   "files_without_error": ["00003663.PE0"],
+  "files_with_warning": [],
   "files_with_error": [],
+  "files_unresolved": [],
+  "files_consumed_by_siesa": ["00003663.PE0"],
   "p97": {
     "enabled": true,
     "generated": true,
@@ -107,9 +110,12 @@ JSON con esta forma:
     "s3_key": "confirmaciones/UCVE1064_20260510_20260525_20260525_190000.P97",
     "error": null
   },
-  "fatal_error": null
+  "fatal_error": null,
+  "log_file": "D:\\Escritorioo\\eurobelleza_rpa\\logs\\run_20260406_190000.log"
 }
 ```
+
+Nota: `files_with_error`, `files_with_warning` y `files_unresolved` contienen objetos (`file`, `s3_key`, `p99_key`, `warnings`/`errors`, `consumed_by_siesa`, y `reason` en `files_unresolved`), no solo strings. `files_without_error` y `files_consumed_by_siesa` sí son listas de nombres de archivo. `files_consumed_by_siesa` es una lista transversal: un archivo puede aparecer ahí y a la vez en `files_with_warning` o `files_unresolved`, no son categorías mutuamente excluyentes entre sí.
 
 ### `confirmaciones/`
 
