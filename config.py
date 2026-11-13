@@ -31,7 +31,7 @@ SIESA_FORCE_MAXIMIZE = False
 SIESA_RESET_WINDOW_LAYOUT = True
 
 MENU_SEQUENCE = ["c", "v", "d", "p", "v"]
-IMPORT_SEQUENCE_PREFIX = ["enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]
+IMPORT_SEQUENCE_PREFIX = ["f2", "down", "enter", "enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]
 IMPORT_SEQUENCE_SUFFIX = ["enter", "1", "1", "D", "99", "0", "S", "enter", "f10"]
 
 # Generación del reporte P97 de pedidos de venta.
