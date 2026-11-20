@@ -27,6 +27,7 @@ from config import (
     AWS_SECRET_KEY,
     DOWNLOADS_DIR,
     FILE_PROCESS_WAIT_SECONDS,
+    IMPORT_SEQUENCE_DOCUMENT_TYPE,
     IMPORT_SEQUENCE_PREFIX,
     IMPORT_SCREENSHOT_PATTERN,
     IMPORT_SEQUENCE_SUFFIX,
@@ -110,6 +111,7 @@ class RpaBot:
         self.state = self._load_state()
         self.login_screenshot = self._resolve_screenshot(LOGIN_SCREENSHOT_PATTERN)
         self.import_screenshot = self._resolve_screenshot(IMPORT_SCREENSHOT_PATTERN)
+        self._document_type_selected = False
         self.run_summary: dict[str, Any] = {
             "run_id": self.run_id,
             "started_at": self._iso_now(),
@@ -348,6 +350,7 @@ class RpaBot:
         self._press_key("enter")
         time.sleep(LOGIN_WAIT_SECONDS)
         self._warn_if_screen_still_visible(self.login_screenshot, "pantalla de login de Siesa")
+        self._document_type_selected = False
 
     def _navigate_to_import_menu(self) -> None:
         self._log("Navegando al menú de importación")
@@ -360,6 +363,13 @@ class RpaBot:
     def _import_file(self, file_name: str) -> None:
         self._ensure_screen_visible(self.import_screenshot, "pantalla de importación de pedidos")
         self._activate_siesa_window()
+
+        if not self._document_type_selected:
+            for key in IMPORT_SEQUENCE_DOCUMENT_TYPE:
+                self._press_key(key)
+                time.sleep(MENU_STEP_WAIT_SECONDS)
+            self._document_type_selected = True
+
         for key in IMPORT_SEQUENCE_PREFIX:
             self._press_key(key)
             time.sleep(MENU_STEP_WAIT_SECONDS)
@@ -588,6 +598,16 @@ class RpaBot:
 
         window = windows[0]
         self._focus_window(window)
+
+        foreground_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if foreground_hwnd != window._hWnd:
+            raise RuntimeError(
+                "No se pudo poner la ventana de Siesa en primer plano "
+                f"(ventana en primer plano: {foreground_hwnd}, ventana de Siesa: {window._hWnd}). "
+                "Esto suele indicar que la sesión de Windows está bloqueada o sin escritorio "
+                "interactivo; revisa que la pantalla no se haya bloqueado y que el equipo no "
+                "entre en suspensión."
+            )
 
     def _wait_for_screen(self, screenshot_path: Path, screen_name: str) -> None:
         deadline = time.time() + SCREEN_CHECK_TIMEOUT_SECONDS

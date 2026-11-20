@@ -3,7 +3,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 
 # Acceso a Siesa
-SIESA_SHORTCUT_PATH = Path(r"D:\Escritorioo\SIESA.85 - GEB.lnk")
+SIESA_SHORTCUT_PATH = Path(r"C:\Users\facturacion\Desktop\SIESA.85.lnk")
 SIESA_WORKING_DIR = Path(r"U:\uno85c")
 SIESA_PEDIDOS_PATH = Path(r"U:\uno85c\eurobelleza\trm")
 SIESA_P99_PATH = Path(r"U:\uno85c\eurobelleza\prt")
@@ -31,7 +31,10 @@ SIESA_FORCE_MAXIMIZE = False
 SIESA_RESET_WINDOW_LAYOUT = True
 
 MENU_SEQUENCE = ["c", "v", "d", "p", "v"]
-IMPORT_SEQUENCE_PREFIX = ["f2", "down", "enter", "enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]
+# Selección del tipo de documento (PV). Solo se necesita una vez por sesión/login en Siesa:
+# una vez elegido PV, se mantiene para los siguientes pedidos importados en la misma sesión.
+IMPORT_SEQUENCE_DOCUMENT_TYPE = ["f2", "down", "enter"]
+IMPORT_SEQUENCE_PREFIX = ["enter", "enter", "enter", "enter", "enter", "enter", "enter", "f2"]
 IMPORT_SEQUENCE_SUFFIX = ["enter", "1", "1", "D", "99", "0", "S", "enter", "f10"]
 
 # Generación del reporte P97 de pedidos de venta.
@@ -56,7 +59,7 @@ P97_REPORT_SEQUENCE = [
 ]
 
 # Carpeta de trabajo local del bot
-BOT_WORKDIR = Path(r"D:\Escritorioo\eurobelleza_rpa")
+BOT_WORKDIR = Path(r"C:\Users\facturacion\Desktop\eurobelleza_rpa")
 DOWNLOADS_DIR = BOT_WORKDIR / "downloads"
 ARCHIVE_DIR = BOT_WORKDIR / "archive"
 LOGS_DIR = BOT_WORKDIR / "logs"
